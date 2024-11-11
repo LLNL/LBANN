@@ -46,27 +46,150 @@
 
 #include "lbann/proto/lbann.pb.h"
 #include "lbann/proto/model.pb.h"
+#include <conduit/conduit_node.hpp>
+
 #include <cstdlib>
 #include <memory>
 
 namespace lbann {
 
-// Loads a model from checkpoint and sets up model for inference
-std::unique_ptr<model> load_inference_model(lbann_comm* lc,
-                                            std::string cp_dir,
-                                            int mbs,
-                                            std::vector<El::Int> input_dims,
-                                            std::vector<El::Int> output_dims)
+namespace {
+
+std::unique_ptr<trainer> global_trainer_;
+
+void cleanup_trainer_atexit() { global_trainer_ = nullptr; }
+
+} // namespace
+
+trainer& get_trainer()
 {
+  LBANN_ASSERT(global_trainer_);
+  return *global_trainer_;
+}
+trainer const& get_const_trainer()
+{
+  LBANN_ASSERT(global_trainer_);
+  return *global_trainer_;
+}
+
+bool trainer_exists()
+{
+  if (global_trainer_ == nullptr) {
+    return false;
+  }
+  else {
+    return true;
+  }
+}
+
+void finalize_trainer() { global_trainer_.reset(); }
+
+// Creates a datareader metadata to get around the need for an actual
+// datareader in inference only mode
+auto mock_dr_metadata(std::vector<int> input_dims,
+                      std::vector<int> output_dims) {
+  DataReaderMetaData drmd;
+  auto& md_dims = drmd.data_dims;
+  md_dims[data_reader_target_mode::INPUT] = input_dims;
+  md_dims[data_reader_target_mode::CLASSIFICATION] = output_dims;
+  return drmd;
+}
+
+// Sets data samples for lbann-core inference
+void set_inference_samples(std::vector<conduit::Node> &samples) {
+  data_coordinator& dc = global_trainer_->get_data_coordinator();
+  generic_data_reader* dr = dc.get_data_reader(execution_mode::inference);
+  data_store_conduit& ds = dr->get_data_store();
+
+  // Push samples into data_store
+  std::vector<int> indices(samples.size());
+  std::iota(indices.begin(), indices.end(), 0);
+  dr->set_shuffled_indices(indices);
+  int data_id = 0;
+  for (auto& node : samples) {
+    ds.set_conduit_node(data_id, node);
+    ++data_id;
+  }
+
+  // Call setup on data_coordinator to have proper init of input buffers
+  std::map<execution_mode, generic_data_reader*> data_readers = {
+    {execution_mode::inference, dr}};
+  dc.setup(global_trainer_->get_io_thread_pool(),
+           global_trainer_->get_max_mini_batch_size(),
+           data_readers);
+}
+
+void setup_inference_env(lbann_comm* lc,
+                         int mbs,
+                         std::vector<int> input_dims,
+                         std::vector<int> output_dims)
+{
+  // Setup data reader
+  auto reader = std::make_unique<conduit_data_reader>();
+  reader->set_comm(lc);
+  reader->set_num_parallel_readers(lc->get_procs_per_trainer());
+  reader->set_mini_batch_size(mbs);
+  reader->set_data_dims(input_dims);
+  reader->set_label_dims(output_dims);
+  reader->set_shuffle(false);
+
+  // Add data store
+  reader->set_data_store(new lbann::data_store_conduit(reader.get()));
+
+  // Setup data coordinator and trainer
+  std::unique_ptr<thread_pool> io_thread_pool =
+    construct_io_thread_pool(lc, false);
+  auto io_threads_per_process = io_thread_pool->get_num_threads();
+  std::unique_ptr<data_coordinator> dc =
+    lbann::make_unique<buffered_data_coordinator<float>>(lc);
+  global_trainer_ =
+    lbann::make_unique<trainer>(lc, std::move(dc), mbs, nullptr);
+  int root_random_seed = lbann_default_random_seed;
+  int random_seed = root_random_seed;
+  int data_seq_random_seed = root_random_seed;
+  init_random(random_seed, io_threads_per_process);
+  init_data_seq_random(data_seq_random_seed);
+  init_ltfb_random(root_random_seed);
+  global_trainer_->set_random_seeds(root_random_seed,
+                                    random_seed,
+                                    data_seq_random_seed);
+
+  // FIXME: The global trainer holds a data coordinator that holds
+  // this map. When the aforementioned data coordinator is destroyed,
+  // it deletes the data readers that it's holding. Therefore, we
+  // release the pointer that we hold and hope no exceptions occur
+  // before the data coordinator takes control of the pointer.
+  std::map<execution_mode, generic_data_reader*> data_readers = {
+    {execution_mode::inference, reader.release()}};
+  global_trainer_->setup(std::move(io_thread_pool), data_readers);
+}
+
+// Loads a model from checkpoint and sets up model for inference
+std::unique_ptr<model>
+load_inference_model(lbann_comm* lc,
+                     std::string cp_dir,
+                     int mbs,
+                     std::vector<int> input_dims,
+                     std::vector<int> output_dims) {
+  // Setup trainer, dr, dc, ds
+  setup_inference_env(lc, mbs, input_dims, output_dims);
+
+  // Load checkpoint
   persist p;
   p.open_restart(cp_dir.c_str());
-  auto m = std::make_unique<model>(lc, nullptr, nullptr);
+  auto m = make_unique<model>(lc, nullptr, nullptr);
   m->load_from_checkpoint_shared(p);
   p.close_restart();
 
   m->setup(mbs, get_trainer().get_grids());
 
   return m;
+}
+
+El::Matrix<El::Int, El::Device::CPU>
+inference(observer_ptr<model> model) {
+  auto inf_alg = batch_functional_inference_algorithm();
+  return inf_alg.infer(model);
 }
 
 /// Split the MPI communicator into trainers
@@ -108,37 +231,6 @@ int allocate_trainer_resources(lbann_comm* comm)
 
   return procs_per_trainer;
 }
-
-namespace {
-
-std::unique_ptr<trainer> global_trainer_;
-
-void cleanup_trainer_atexit() { global_trainer_ = nullptr; }
-
-} // namespace
-
-trainer& get_trainer()
-{
-  LBANN_ASSERT(global_trainer_);
-  return *global_trainer_;
-}
-trainer const& get_const_trainer()
-{
-  LBANN_ASSERT(global_trainer_);
-  return *global_trainer_;
-}
-
-bool trainer_exists()
-{
-  if (global_trainer_ == nullptr) {
-    return false;
-  }
-  else {
-    return true;
-  }
-}
-
-void finalize_trainer() { global_trainer_.reset(); }
 
 /// Construct a trainer that contains a lbann comm object and threadpool
 trainer& construct_trainer(lbann_comm* comm,
@@ -601,7 +693,7 @@ void print_lbann_configuration(lbann_comm* comm,
 #else
   std::cout << "NOT detected" << std::endl;
 #endif // LBANN_HAS_ALUMINUM
-  std::cout << "  GPU     : ";
+  std::cout << "  GPU      : ";
 #ifdef LBANN_HAS_GPU
   std::cout << "detected" << std::endl;
 #else

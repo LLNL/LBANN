@@ -134,23 +134,21 @@ void input_layer<TensorDataType, T_layout, Dev>::fp_setup_outputs()
 template <typename TensorDataType, data_layout T_layout, El::Device Dev>
 void input_layer<TensorDataType, T_layout, Dev>::fp_compute()
 {
-  if (!this->m_samples_loaded) {
-    execution_mode const mode =
-      this->m_model->get_execution_context().get_execution_mode();
-    buffered_data_coordinator<TensorDataType>& dc =
-      static_cast<buffered_data_coordinator<TensorDataType>&>(
-        get_trainer().get_data_coordinator());
+  execution_mode const mode =
+    this->m_model->get_execution_context().get_execution_mode();
+  buffered_data_coordinator<TensorDataType>& dc =
+    static_cast<buffered_data_coordinator<TensorDataType>&>(
+      get_trainer().get_data_coordinator());
 
-    dc.distribute_from_local_matrix(mode,
-                                    m_data_field,
-                                    this->get_activations(0));
+  dc.distribute_from_local_matrix(mode,
+                                  m_data_field,
+                                  this->get_activations(0));
 
 #ifdef LBANN_HAS_DISTCONV
-    if (this->distconv_enabled()) {
-      get_distconv_adapter().fp_compute();
-    }
-#endif // LBANN_HAS_DISTCONV
+  if (this->distconv_enabled()) {
+    get_distconv_adapter().fp_compute();
   }
+#endif // LBANN_HAS_DISTCONV
 }
 
 template <typename TensorDataType, data_layout T_layout, El::Device Dev>

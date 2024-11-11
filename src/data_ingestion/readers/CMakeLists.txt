@@ -27,6 +27,7 @@
 set_full_path(THIS_DIR_SOURCES
   metadata.cpp
   data_reader_cifar10.cpp
+  data_reader_conduit.cpp
   data_reader_csv.cpp
   data_reader_image.cpp
   data_reader_jag_conduit.cpp

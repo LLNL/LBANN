@@ -31,9 +31,69 @@
 #include "lbann/models/model.hpp"
 #include "lbann/proto/proto_common.hpp"
 
+#include <conduit/conduit_node.hpp>
+
 namespace lbann {
 
 const int lbann_default_random_seed = 42;
+
+/** @brief Places conduit samples into data store for inference
+ * @param[in] samples vector of Conduit nodes, 1 node per sample
+ */
+void set_inference_samples(std::vector<conduit::Node> &samples);
+
+/** @brief Places samples into data store for inference
+ * @param[in] samples_map map of <data_field, samples>
+ */
+template <typename DataT,
+          El::Dist CDist,
+          El::Dist RDist,
+          El::DistWrap DistView,
+          El::Device Device>
+void set_inference_samples(
+  const std::map<std::string,
+                 El::DistMatrix<DataT, CDist, RDist, DistView, Device>>&
+    samples_map)
+{
+  size_t const sample_n = samples_map.begin()->second.Width();
+  std::vector<conduit::Node> conduit_samples(sample_n);
+  for (const auto& kv : samples_map) {
+    El::DistMatrixReadProxy<DataT, DataT, El::STAR, El::VC, El::ELEMENT, Device>
+      samples_proxy(kv.second);
+    auto const& samples =
+      samples_proxy.GetLocked(); //< DistMatrix<T,STAR,VC,ELEMENT,D> const&
+    size_t const sample_size = samples.Height();
+
+    for (size_t i = 0; i < sample_n; i++) {
+      DataT const* data =
+        samples.LockedBuffer() + i * samples.LDim(); // 1 column = 1 sample
+      conduit_samples[i][kv.first].set(data, sample_size);
+    }
+  }
+  set_inference_samples(conduit_samples);
+}
+
+/** @brief Places samples into data store for inference
+ * @param[in] samples_map map of <data_field, samples>
+ */
+template <typename DataT, El::Device Device>
+void set_inference_samples(
+  const std::map<std::string, El::Matrix<DataT, Device>>& samples_map)
+{
+  size_t const sample_n = samples_map.begin()->second.Width();
+  std::vector<conduit::Node> conduit_samples(sample_n);
+  for (const auto& kv : samples_map) {
+    auto const& samples = kv.second;
+    size_t const sample_size = samples.Height();
+
+    for (size_t i = 0; i < sample_n; i++) {
+      DataT const* data =
+        samples.LockedBuffer() + i * samples.LDim(); // 1 column = 1 sample
+      conduit_samples[i][kv.first].set(data, sample_size);
+    }
+  }
+  set_inference_samples(conduit_samples);
+}
 
 /** @brief Loads a trained model from checkpoint for inference only
  * @param[in] lc An LBANN Communicator
@@ -49,25 +109,12 @@ std::unique_ptr<model> load_inference_model(lbann_comm* lc,
                                             std::vector<int> input_dims,
                                             std::vector<int> output_dims);
 
-/** @brief Creates execution algorithm and infers on samples using a model
+/** @brief Creates execution algorithm and runs inference on model
  * @param[in] model A trained model
- * @param[in] samples A distributed matrix containing samples for model input
- * @param[in] mbs The max mini-batch size
  * @return Matrix of predicted labels
  */
-template <typename DataT,
-          El::Dist CDist,
-          El::Dist RDist,
-          El::DistWrap DistView,
-          El::Device Device>
-El::Matrix<int, El::Device::CPU>
-infer(observer_ptr<model> model,
-      El::DistMatrix<DataT, CDist, RDist, DistView, Device> const& samples,
-      size_t mbs)
-{
-  auto inf_alg = batch_functional_inference_algorithm();
-  return inf_alg.infer(model, samples, mbs);
-}
+El::Matrix<El::Int, El::Device::CPU>
+inference(observer_ptr<model> model);
 
 int allocate_trainer_resources(lbann_comm* comm);
 

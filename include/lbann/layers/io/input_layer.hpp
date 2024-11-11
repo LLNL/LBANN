@@ -151,11 +151,6 @@ public:
 
   void fp_compute() override;
 
-  /** @brief Places samples in input tensors
-   *  @param samples Distributed Matrix of samples
-   */
-  void set_samples(const El::AbstractDistMatrix<TensorDataType>& samples);
-
   /**
    * Get the dimensions of the underlying data.
    */
@@ -177,10 +172,6 @@ protected:
 private:
   friend cereal::access;
   input_layer() : input_layer(nullptr) {}
-
-  // This is to track if samples are loaded with set_samples(), if so the
-  // fp_compute() sample loading is no longer necessary
-  bool m_samples_loaded = false;
 
   data_field_type m_data_field;
 

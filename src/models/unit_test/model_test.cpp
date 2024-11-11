@@ -48,6 +48,16 @@ namespace {
 // model_prototext string is defined here as a "const std::string".
 #include "lenet.prototext.inc"
 
+auto mock_datareader_metadata()
+{
+  lbann::DataReaderMetaData md;
+  auto& md_dims = md.data_dims;
+  // This is all that should be needed for this test.
+  md_dims[lbann::data_reader_target_mode::CLASSIFICATION] = {10};
+  md_dims[lbann::data_reader_target_mode::INPUT] = {1,28,28};
+  return md;
+}
+
 template <typename T>
 auto make_model(lbann::lbann_comm& comm,
                 const std::string& model_contents = model_prototext)
@@ -72,8 +82,6 @@ auto make_model(lbann::lbann_comm& comm,
 using unit_test::utilities::IsValidPtr;
 TEST_CASE("Serializing models", "[mpi][model][serialize]")
 {
-  using DataType = float;
-
   auto& comm = unit_test::utilities::current_world_comm();
 
   auto& g = comm.get_trainer_grid();

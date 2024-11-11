@@ -25,6 +25,7 @@
 ################################################################################
 # Add the source files for this directory
 set_full_path(THIS_DIR_SOURCES
+  batch_functional_inference_algorithm.cpp
   execution_context.cpp
   factory.cpp
   kfac.cpp
